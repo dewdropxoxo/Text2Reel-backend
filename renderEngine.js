@@ -1,113 +1,72 @@
-import puppeteer from 'puppeteer';
 import ffmpeg from 'fluent-ffmpeg';
 import { PassThrough } from 'stream';
+import fs from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 
-/**
- * Optimized for Render.com Environment
- */
-export async function runRenderJob(scriptData) {
-  // Launch browser with specific flags for restricted environments (like Render)
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu'
-    ]
-  });
-  const page = await browser.newPage();
+export async function processVideoJob(socket, data) {
+  const { 
+    title, 
+    quality = '720p', 
+    isPro = false, 
+    audioEvents = [],
+    fps = 30 
+  } = data;
 
-  // IMPORTANT: Log browser events to Node console so we can see why it fails in Render logs
-  page.on('console', msg => console.log('[Puppeteer Console]:', msg.text()));
-  page.on('pageerror', err => console.error('[Puppeteer Error]:', err.message));
+  const jobId = uuidv4();
+  const outputDir = './temp';
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+  
+  const outputPath = path.join(outputDir, `${jobId}.mp4`);
+  const inputStream = new PassThrough();
 
-  // Set a standard vertical mobile viewport
-  await page.setViewport({ width: 360, height: 640, deviceScaleFactor: 2 });
+  console.log(`[Job ${jobId}] Initializing FFmpeg...`);
 
-  // 1. Visit the render preview page
-  // On Render, we'll use the APP_URL env var you set in the dashboard
-  const appUrl = process.env.APP_URL || 'http://localhost:5173';
-  console.log(`[Render Engine] Attempting to load: ${appUrl}/#/render-preview`);
+  const ff = ffmpeg()
+    .input(inputStream)
+    .inputFormat('image2pipe')
+    .inputFPS(fps)
+    .videoCodec('libx264')
+    .outputOptions([
+      '-pix_fmt yuv420p',
+      '-preset ultrafast',
+      '-movflags +faststart'
+    ]);
 
-  try {
-    // Increased timeout to 60 seconds to allow cold frontends to boot up
-    await page.goto(`${appUrl}/#/render-preview`, {
-      waitUntil: 'networkidle0',
-      timeout: 60000
-    });
+  // Resolution Management
+  const scale = quality === '1080p' ? '1080:1920' : '720:1280';
+  let videoFilters = [`scale=${scale}:force_original_aspect_ratio=decrease,pad=${scale}:(ow-iw)/2:(oh-ih)/2`];
 
-    // 2. Inject the script data
-    await page.evaluate((data) => {
-      window.RENDER_DATA = data;
-    }, scriptData);
-
-    // 3. Wait for the page's "ready" signal
-    // Increased timeout to 60 seconds
-    await page.waitForFunction(() => window.IS_READY === true, {
-      timeout: 60000
-    });
-
-    // 4. Setup FFmpeg Pipe
-    const videoStream = new PassThrough();
-    const ffmpegProcess = ffmpeg()
-      .inputFormat('image2pipe')
-      .inputFPS(30)
-      .input('-')
-      .videoCodec('libx264')
-      .outputOptions([
-        '-pix_fmt yuv420p',
-        '-preset ultrafast',
-        '-movflags frag_keyframe+empty_moov'
-      ])
-      .format('mp4')
-      .on('error', (err) => console.error('FFmpeg Error:', err));
-
-    const finalStream = ffmpegProcess.pipe(videoStream);
-
-    // 5. Frame Generation Loop
-    const messages = scriptData.content;
-    let previewMsgs = [];
-
-    for (const msg of messages) {
-      if (msg.type === 'msg') {
-        if (msg.sender === 'me') {
-          // Typing animation for "Me"
-          for (let i = 1; i <= msg.text.length; i++) {
-            await page.evaluate((msgs, text) => {
-              window.setPreviewState(msgs, false, text);
-            }, previewMsgs, msg.text.substring(0, i));
-
-            const buffer = await page.screenshot({ type: 'png' });
-            ffmpegProcess.stdin.write(buffer);
-          }
-        } else {
-          // Typing indicator for "Them"
-          await page.evaluate((msgs) => window.setPreviewState(msgs, true, ''), previewMsgs);
-          for (let i = 0; i < 15; i++) { // ~0.5s typing
-            const buffer = await page.screenshot({ type: 'png' });
-            ffmpegProcess.stdin.write(buffer);
-          }
-        }
-        previewMsgs.push(msg);
-      } else {
-        previewMsgs.push(msg);
-      }
-
-      // Final state of this message
-      await page.evaluate((msgs) => window.setPreviewState(msgs, false, ''), previewMsgs);
-      for (let i = 0; i < 20; i++) { // ~0.6s pause
-        const buffer = await page.screenshot({ type: 'png' });
-        ffmpegProcess.stdin.write(buffer);
-      }
-    }
-
-    ffmpegProcess.stdin.end();
-    await browser.close();
-    return videoStream;
-
-  } catch (err) {
-    await browser.close();
-    throw err;
+  // Watermark for Free users
+  if (!isPro) {
+    videoFilters.push(`drawtext=text='watermark':x=w-120:y=h-60:fontsize=32:fontcolor=white@0.3:shadowcolor=black@0.2:shadowx=2:shadowy=2`);
   }
+
+  ff.videoFilters(videoFilters);
+
+  // Audio Handling (Placeholder for actual mixing logic)
+  // In a full implementation, we would download the assets and use -filter_complex
+  // For now, we focus on the video stream stability
+  
+  ff.on('error', (err) => {
+    console.error('FFmpeg Error:', err);
+    socket.emit('render-error', { message: 'Video encoding failed' });
+  })
+  .on('end', () => {
+    console.log(`[Job ${jobId}] Completed.`);
+    // In a real production environment, you'd upload to S3 here.
+    // For this prototype, we'll notify the client we are ready.
+    socket.emit('render-complete', { jobId, downloadUrl: '#' }); 
+  })
+  .save(outputPath);
+
+  // Listen for frames from the client
+  socket.on('frame', (frameBuffer) => {
+    inputStream.write(Buffer.from(frameBuffer));
+  });
+
+  socket.on('finish-frames', () => {
+    console.log(`[Job ${jobId}] Finalizing...`);
+    inputStream.end();
+  });
 }
