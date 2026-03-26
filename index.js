@@ -1,15 +1,27 @@
 import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
+import {createServer} from 'http';
+import {Server} from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { processVideoJob } from './renderEngine.js';
+import path from 'path';
+import fs from 'fs';
+import {processVideoJob} from './renderEngine.js';
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Ensure temp directory exists
+const tempDir = path.join(process.cwd(), 'temp');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir);
+}
+
+// SURGICAL FIX: Serve the temp folder as static files
+// This allows the browser to actually download the .mp4 files
+app.use('/temp', express.static(tempDir));
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -26,7 +38,7 @@ app.get('/', (req, res) => {
 
 io.on('connection', (socket) => {
   console.log('Client connected for rendering:', socket.id);
-
+  
   socket.on('start-render', async (data) => {
     try {
       console.log('Starting render job for:', data.title);
