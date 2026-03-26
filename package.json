@@ -1,7 +1,7 @@
 {
   "name": "text2reel-render-server",
   "version": "1.0.0",
-  "description": "Professional video rendering engine for Text2Reel",
+  "description": "Professional hybrid video rendering engine for Text2Reel",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -11,9 +11,9 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "puppeteer": "^23.6.0",
     "fluent-ffmpeg": "^2.1.2",
     "dotenv": "^16.4.1",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "socket.io": "^4.7.4"
   }
 }
