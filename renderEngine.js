@@ -10,10 +10,9 @@ export async function processVideoJob(socket, data) {
   const outputDir = './temp';
   
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-  
   const outputPath = path.join(outputDir, `${jobId}.mp4`);
-  const inputStream = new PassThrough();
   
+  const inputStream = new PassThrough();
   console.log(`[Job ${jobId}] Starting render: ${quality} @ ${fps}fps`);
 
   const ff = ffmpeg()
@@ -28,19 +27,17 @@ export async function processVideoJob(socket, data) {
       '-crf 23'
     ]);
 
-  // Resolution Management - STRICT 9:16 Aspect Ratio
+  // Resolution Management
   const width = quality === '1080p' ? 1080 : 720;
   const height = quality === '1080p' ? 1920 : 1280;
-  
   let videoFilters = [`scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`];
   
   if (!isPro) {
     videoFilters.push(`drawtext=text='Text2Reel':x=w-150:y=h-80:fontsize=32:fontcolor=white@0.3:shadowcolor=black@0.2:shadowx=2:shadowy=2`);
   }
-  
   ff.videoFilters(videoFilters);
 
-  // --- AUDIO MIXING SYSTEM ---
+  // Audio Mixing
   const SOUND_ASSETS = {
     TYPING: 'https://mp3tourl.com/audio/1774410364465-b6e3995a-51ee-4ead-bf78-881acfcaa4c8.wav',
     SEND: 'https://mp3tourl.com/audio/1774410462405-b5063226-2516-493b-8900-ec7b22d0e1f0.wav',
@@ -51,26 +48,21 @@ export async function processVideoJob(socket, data) {
   if (audioEvents.length > 0) {
     const uniqueTypes = [...new Set(audioEvents.map(e => e.type))];
     const typeToIndex = {};
-    
     uniqueTypes.forEach((type, idx) => {
       ff.input(SOUND_ASSETS[type]);
-      typeToIndex[type] = idx + 1; // Input 0 is the video pipe
+      typeToIndex[type] = idx + 1;
     });
 
     let filterString = '';
     let amixInputs = '';
-    
     audioEvents.forEach((event, idx) => {
       const inputIdx = typeToIndex[event.type];
       const delay = event.timestamp;
       const label = `aud${idx}`;
-      // Use adelay for precise triggering
-      filterString += `[${inputIdx}:a]adelay=${delay}|${delay}[${label}]; `;
+      filterString += `[${inputIdx}:a]adelay=${delay}|${delay}[${label}];`;
       amixInputs += `[${label}]`;
     });
-
     filterString += `${amixInputs}amix=inputs=${audioEvents.length}:dropout_transition=0[outa]`;
-    
     ff.complexFilter(filterString);
     ff.outputOptions(['-map 0:v', '-map [outa]']);
   } else {
@@ -87,12 +79,12 @@ export async function processVideoJob(socket, data) {
   })
   .save(outputPath);
 
-  // Buffer frames from socket with ACK callback
-  socket.on('frame', (frameBuffer, ack) => {
+  // SURGICAL FIX: Stream handling without strict ACK blocking
+  socket.on('frame', (frameBuffer) => {
     try {
-      inputStream.write(Buffer.from(frameBuffer), () => {
-        if (ack) ack(); // Signal browser that it can send the next frame
-      });
+      if (inputStream.writable) {
+        inputStream.write(Buffer.from(frameBuffer));
+      }
     } catch (e) {
       console.error("Stream write error:", e);
     }
@@ -100,6 +92,8 @@ export async function processVideoJob(socket, data) {
 
   socket.on('finish-frames', () => {
     console.log(`[Job ${jobId}] Finalizing stream...`);
+    // Signal the client that we've started the heavy muxing phase
+    socket.emit('processing-video');
     inputStream.end();
   });
 }
