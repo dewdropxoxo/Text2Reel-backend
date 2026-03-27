@@ -54,18 +54,20 @@ export async function processVideoJob(socket, data) {
     let filterString = '';
     let amixInputs = '';
 
+    // Precise mixing of discrete audio events
     audioEvents.forEach((event, idx) => {
       const inputIdx = typeToIdx[event.type];
-      const delay = event.timestamp;
+      const delay = event.timestamp; // Already calculated as (frame/fps)*1000 in frontend
       const label = `a${idx}`;
       
-      // Apply volume based on type: 0.3 for typing/backspace, 0.6 for others
-      const volume = (event.type === 'TYPING' || event.type === 'BACKSPACE') ? 0.3 : 0.6;
+      // Keystrokes are quieter, UI alerts are louder
+      const volume = (event.type === 'TYPING' || event.type === 'BACKSPACE') ? 0.25 : 0.6;
       
       filterString += `[${inputIdx}:a]adelay=${delay}|${delay},volume=${volume}[${label}];`;
       amixInputs += `[${label}]`;
     });
 
+    // Use amix with normalize=0 to prevent volume dipping when many inputs overlap
     filterString += `${amixInputs}amix=inputs=${audioEvents.length}:dropout_transition=0:normalize=0[outa]`;
 
     ff.complexFilter(filterString);
@@ -113,4 +115,4 @@ async function runServerSideRender(inputStream, data, socket) {
   } catch (e) {
     socket.emit('render-error', { message: `Puppeteer Error: ${e.message}` });
   }
-    }
+          }
