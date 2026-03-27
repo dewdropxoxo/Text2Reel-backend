@@ -1,7 +1,7 @@
 {
   "name": "text2reel-render-server",
-  "version": "1.0.0",
-  "description": "Professional hybrid video rendering engine for Text2Reel",
+  "version": "1.1.0",
+  "description": "Professional hybrid video rendering engine with Puppeteer support",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "fluent-ffmpeg": "^2.1.2",
     "dotenv": "^16.4.1",
     "uuid": "^9.0.1",
-    "socket.io": "^4.7.4"
+    "socket.io": "^4.7.4",
+    "puppeteer": "^22.6.0"
   }
 }
