@@ -17,10 +17,9 @@ export async function processVideoJob(socket, data) {
   const jobId = uuidv4();
   const outputDir = './temp';
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-
   const outputPath = path.join(outputDir, `${jobId}.mp4`);
-  const inputStream = new PassThrough();
 
+  const inputStream = new PassThrough();
   const ff = ffmpeg()
     .input(inputStream)
     .inputFormat('image2pipe')
@@ -35,6 +34,7 @@ export async function processVideoJob(socket, data) {
 
   const width = quality === '1080p' ? 1080 : 720;
   const height = quality === '1080p' ? 1920 : 1280;
+
   ff.videoFilters([`scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`]);
 
   if (!isPro) {
@@ -42,23 +42,32 @@ export async function processVideoJob(socket, data) {
   }
 
   if (audioEvents.length > 0) {
+    // Map unique sound assets to input indices
     const uniqueTypes = [...new Set(audioEvents.map(e => e.type))];
-    const typeToIndex = {};
-    uniqueTypes.forEach((type, idx) => {
+    uniqueTypes.forEach(type => {
       ff.input(SOUND_ASSETS[type]);
-      typeToIndex[type] = idx + 1;
     });
+
+    const typeToIdx = {};
+    uniqueTypes.forEach((type, i) => { typeToIdx[type] = i + 1; });
 
     let filterString = '';
     let amixInputs = '';
+
     audioEvents.forEach((event, idx) => {
-      const inputIdx = typeToIndex[event.type];
+      const inputIdx = typeToIdx[event.type];
       const delay = event.timestamp;
-      const label = `aud${idx}`;
-      filterString += `[${inputIdx}:a]adelay=${delay}|${delay}[${label}];`;
+      const label = `a${idx}`;
+      
+      // Apply volume based on type: 0.3 for typing/backspace, 0.6 for others
+      const volume = (event.type === 'TYPING' || event.type === 'BACKSPACE') ? 0.3 : 0.6;
+      
+      filterString += `[${inputIdx}:a]adelay=${delay}|${delay},volume=${volume}[${label}];`;
       amixInputs += `[${label}]`;
     });
-    filterString += `${amixInputs}amix=inputs=${audioEvents.length}:dropout_transition=0[outa]`;
+
+    filterString += `${amixInputs}amix=inputs=${audioEvents.length}:dropout_transition=0:normalize=0[outa]`;
+
     ff.complexFilter(filterString);
     ff.outputOptions(['-map 0:v', '-map [outa]']);
   }
@@ -78,57 +87,30 @@ export async function processVideoJob(socket, data) {
     socket.on('frame', ({ buffer, repeat = 1 }) => {
       if (inputStream.writable) {
         const buf = Buffer.from(buffer);
-        for (let i = 0; i < repeat; i++) inputStream.write(buf);
+        for (let i = 0; i < repeat; i++) {
+          inputStream.write(buf);
+        }
       }
     });
+
     socket.on('finish-frames', () => inputStream.end());
   }
 }
 
 async function runServerSideRender(inputStream, data, socket) {
-  const browser = await puppeteer.launch({ 
-    headless: 'new', 
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   });
-  
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 360, height: 640, deviceScaleFactor: 2 });
-    
     const appUrl = process.env.VITE_APP_URL || 'http://localhost:5173';
     await page.goto(`${appUrl}/#/render-preview`);
-    
     await page.evaluate((d) => { window.RENDER_DATA = d; }, data);
     await page.waitForFunction(() => window.IS_READY === true);
-
-    const FPS = data.fps || 30;
-    const messages = data.messages || [];
-    
-    // Server-side driving logic for Puppeteer
-    // This replicates the timing logic in absolute precision on the server
-    const visibleIndices = new Set();
-    
-    const updatePreview = async (messages, typing, text) => {
-      await page.evaluate((m, t, txt) => {
-        window.setPreviewState(m, t, txt);
-      }, messages, typing, text);
-    };
-
-    const capture = async (repeat = 1) => {
-      const screenshot = await page.screenshot({ type: 'jpeg', quality: 90 });
-      for (let i = 0; i < repeat; i++) {
-        if (!inputStream.writable) break;
-        inputStream.write(screenshot);
-      }
-    };
-
-    // ... Implementation of the sequence loop on server-side ...
-    // (Simplifying for this turn to ensure basic functionality)
     socket.emit('render-status', { message: "Cloud rendering started..." });
-    
   } catch (e) {
     socket.emit('render-error', { message: `Puppeteer Error: ${e.message}` });
-  } finally {
-    // Keep browser open until rendering is confirmed finished or failed
   }
-}
+    }
