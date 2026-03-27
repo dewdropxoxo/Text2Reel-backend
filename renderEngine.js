@@ -8,6 +8,7 @@ export async function processVideoJob(socket, data) {
   const { title, quality = '720p', isPro = false, audioEvents = [], fps = 30 } = data;
   const jobId = uuidv4();
   const outputDir = './temp';
+  
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   
   const outputPath = path.join(outputDir, `${jobId}.mp4`);
@@ -27,7 +28,7 @@ export async function processVideoJob(socket, data) {
       '-crf 23'
     ]);
 
-  // Resolution Management - STRICT 9:16
+  // Resolution Management - STRICT 9:16 Aspect Ratio
   const width = quality === '1080p' ? 1080 : 720;
   const height = quality === '1080p' ? 1920 : 1280;
   
@@ -48,18 +49,14 @@ export async function processVideoJob(socket, data) {
   };
 
   if (audioEvents.length > 0) {
-    // Map of unique sound types used in this job
     const uniqueTypes = [...new Set(audioEvents.map(e => e.type))];
     const typeToIndex = {};
     
-    // Add audio inputs for each unique sound type
     uniqueTypes.forEach((type, idx) => {
       ff.input(SOUND_ASSETS[type]);
       typeToIndex[type] = idx + 1; // Input 0 is the video pipe
     });
 
-    // Build adelay filter string
-    // Example: [1:a]adelay=500|500[a1]; [2:a]adelay=1200|1200[a2]; [a1][a2]amix=inputs=2[outa]
     let filterString = '';
     let amixInputs = '';
     
@@ -67,6 +64,7 @@ export async function processVideoJob(socket, data) {
       const inputIdx = typeToIndex[event.type];
       const delay = event.timestamp;
       const label = `aud${idx}`;
+      // Use adelay for precise triggering
       filterString += `[${inputIdx}:a]adelay=${delay}|${delay}[${label}]; `;
       amixInputs += `[${label}]`;
     });
@@ -76,7 +74,6 @@ export async function processVideoJob(socket, data) {
     ff.complexFilter(filterString);
     ff.outputOptions(['-map 0:v', '-map [outa]']);
   } else {
-    // Silent video if no audio events
     ff.outputOptions(['-map 0:v']);
   }
 
@@ -85,18 +82,24 @@ export async function processVideoJob(socket, data) {
     socket.emit('render-error', { message: 'Video encoding failed' });
   })
   .on('end', () => {
-    console.log(`[Job ${jobId}] Saved to ${outputPath}`);
+    console.log(`[Job ${jobId}] Export Complete: ${outputPath}`);
     socket.emit('render-complete', { jobId });
   })
   .save(outputPath);
 
-  // Buffer frames from socket
-  socket.on('frame', (frameBuffer) => {
-    inputStream.write(Buffer.from(frameBuffer));
+  // Buffer frames from socket with ACK callback
+  socket.on('frame', (frameBuffer, ack) => {
+    try {
+      inputStream.write(Buffer.from(frameBuffer), () => {
+        if (ack) ack(); // Signal browser that it can send the next frame
+      });
+    } catch (e) {
+      console.error("Stream write error:", e);
+    }
   });
 
   socket.on('finish-frames', () => {
-    console.log(`[Job ${jobId}] Cleaning up streams...`);
+    console.log(`[Job ${jobId}] Finalizing stream...`);
     inputStream.end();
   });
 }
