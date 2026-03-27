@@ -42,7 +42,6 @@ export async function processVideoJob(socket, data) {
   }
 
   if (audioEvents.length > 0) {
-    // Map unique sound assets to input indices
     const uniqueTypes = [...new Set(audioEvents.map(e => e.type))];
     uniqueTypes.forEach(type => {
       ff.input(SOUND_ASSETS[type]);
@@ -51,23 +50,48 @@ export async function processVideoJob(socket, data) {
     const typeToIdx = {};
     uniqueTypes.forEach((type, i) => { typeToIdx[type] = i + 1; });
 
+    // Count exact occurrences of each audio type to determine split count
+    const typeCounts = {};
+    audioEvents.forEach(e => { typeCounts[e.type] = (typeCounts[e.type] || 0) + 1; });
+
     let filterString = '';
     let amixInputs = '';
 
-    // Precise mixing of discrete audio events
-    audioEvents.forEach((event, idx) => {
-      const inputIdx = typeToIdx[event.type];
-      const delay = event.timestamp; // Already calculated as (frame/fps)*1000 in frontend
-      const label = `a${idx}`;
-      
-      // Keystrokes are quieter, UI alerts are louder
-      const volume = (event.type === 'TYPING' || event.type === 'BACKSPACE') ? 0.25 : 0.6;
-      
-      filterString += `[${inputIdx}:a]adelay=${delay}|${delay},volume=${volume}[${label}];`;
-      amixInputs += `[${label}]`;
+    // 1. SAFELY SPLIT STREAMS: FFmpeg requires duplicating the stream if used multiple times
+    uniqueTypes.forEach(type => {
+      const count = typeCounts[type];
+      const inputIdx = typeToIdx[type];
+      if (count > 1) {
+        let splits = '';
+        for (let i = 0; i < count; i++) {
+          splits += `[s_${type}_${i}]`;
+        }
+        filterString += `[${inputIdx}:a]asplit=${count}${splits};`;
+      } else {
+        // If used only once, just map it directly to safely match the naming convention
+        filterString += `[${inputIdx}:a]anull[s_${type}_0];`;
+      }
     });
 
-    // Use amix with normalize=0 to prevent volume dipping when many inputs overlap
+    // 2. APPLY PRECISE DELAYS TO INDIVIDUAL CLONED STREAMS
+    const currentCounters = {};
+    audioEvents.forEach((event, idx) => {
+      const type = event.type;
+      const c = currentCounters[type] || 0;
+      currentCounters[type] = c + 1;
+
+      const inLabel = `[s_${type}_${c}]`;
+      const outLabel = `[a${idx}]`;
+      const delay = event.timestamp; 
+      
+      const volume = (type === 'TYPING' || type === 'BACKSPACE') ? 0.3 : 0.6;
+      
+      // using all=1 safely applies the delay across channels whether the source is mono or stereo
+      filterString += `${inLabel}adelay=delays=${delay}:all=1,volume=${volume}${outLabel};`;
+      amixInputs += outLabel;
+    });
+
+    // 3. MIX ALL STREAMS
     filterString += `${amixInputs}amix=inputs=${audioEvents.length}:dropout_transition=0:normalize=0[outa]`;
 
     ff.complexFilter(filterString);
@@ -115,4 +139,4 @@ async function runServerSideRender(inputStream, data, socket) {
   } catch (e) {
     socket.emit('render-error', { message: `Puppeteer Error: ${e.message}` });
   }
-          }
+}
