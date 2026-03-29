@@ -50,14 +50,13 @@ export async function processVideoJob(socket, data) {
     const typeToIdx = {};
     uniqueTypes.forEach((type, i) => { typeToIdx[type] = i + 1; });
 
-    // Count exact occurrences of each audio type to determine split count
     const typeCounts = {};
     audioEvents.forEach(e => { typeCounts[e.type] = (typeCounts[e.type] || 0) + 1; });
 
     let filterString = '';
     let amixInputs = '';
 
-    // 1. SAFELY SPLIT STREAMS: FFmpeg requires duplicating the stream if used multiple times
+    // 1. SPLIT STREAMS
     uniqueTypes.forEach(type => {
       const count = typeCounts[type];
       const inputIdx = typeToIdx[type];
@@ -68,12 +67,11 @@ export async function processVideoJob(socket, data) {
         }
         filterString += `[${inputIdx}:a]asplit=${count}${splits};`;
       } else {
-        // If used only once, just map it directly to safely match the naming convention
         filterString += `[${inputIdx}:a]anull[s_${type}_0];`;
       }
     });
 
-    // 2. APPLY PRECISE DELAYS TO INDIVIDUAL CLONED STREAMS
+    // 2. APPLY PRECISION TRIMMING AND DELAYS
     const currentCounters = {};
     audioEvents.forEach((event, idx) => {
       const type = event.type;
@@ -84,10 +82,15 @@ export async function processVideoJob(socket, data) {
       const outLabel = `[a${idx}]`;
       const delay = event.timestamp; 
       
-      const volume = (type === 'TYPING' || type === 'BACKSPACE') ? 0.3 : 0.6;
+      const isKeystroke = (type === 'TYPING' || type === 'BACKSPACE');
+      const volume = isKeystroke ? 0.35 : 0.6;
       
-      // using all=1 safely applies the delay across channels whether the source is mono or stereo
-      filterString += `${inLabel}adelay=delays=${delay}:all=1,volume=${volume}${outLabel};`;
+      // PRECISION FIX: 
+      // For keystrokes, we trim the asset to 100ms (0.1s) and reset timestamps (asetpts).
+      // This prevents long typing sounds from overlapping and playing forever.
+      const trimFilter = isKeystroke ? 'atrim=end=0.1,asetpts=PTS-STARTPTS,' : '';
+      
+      filterString += `${inLabel}${trimFilter}adelay=delays=${delay}:all=1,volume=${volume}${outLabel};`;
       amixInputs += outLabel;
     });
 
