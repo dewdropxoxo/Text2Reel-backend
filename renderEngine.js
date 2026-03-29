@@ -83,14 +83,18 @@ export async function processVideoJob(socket, data) {
       const delay = event.timestamp; 
       
       const isKeystroke = (type === 'TYPING' || type === 'BACKSPACE');
-      const volume = isKeystroke ? 0.35 : 0.6;
       
-      // PRECISION FIX: 
-      // For keystrokes, we trim the asset to 100ms (0.1s) and reset timestamps (asetpts).
-      // This prevents long typing sounds from overlapping and playing forever.
-      const trimFilter = isKeystroke ? 'atrim=end=0.1,asetpts=PTS-STARTPTS,' : '';
+      // SURGICAL FIX: 
+      // 1. Use duration=0.2 to ensure the click is captured (0.1 was too short for some streams).
+      // 2. Add a tiny fadeout (afade) to prevent audio pops.
+      // 3. Use pipe syntax for adelay (delay|delay) as it's more stable for stereo inputs.
+      const trimFilter = isKeystroke 
+        ? 'atrim=duration=0.2,asetpts=PTS-STARTPTS,afade=t=out:st=0.15:d=0.05,' 
+        : '';
       
-      filterString += `${inLabel}${trimFilter}adelay=delays=${delay}:all=1,volume=${volume}${outLabel};`;
+      const volume = isKeystroke ? 0.5 : 0.7;
+      
+      filterString += `${inLabel}${trimFilter}adelay=${delay}|${delay},volume=${volume}${outLabel};`;
       amixInputs += outLabel;
     });
 
@@ -142,4 +146,4 @@ async function runServerSideRender(inputStream, data, socket) {
   } catch (e) {
     socket.emit('render-error', { message: `Puppeteer Error: ${e.message}` });
   }
-}
+      }
