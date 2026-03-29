@@ -13,12 +13,13 @@ const SOUND_ASSETS = {
 };
 
 export async function processVideoJob(socket, data) {
-  const { title, quality = '720p', isPro = false, audioEvents = [], fps = 30, mode = 'hybrid' } = data;
+  // EXTRACT DYNAMIC VOLUMES
+  const { title, quality = '720p', isPro = false, audioEvents = [], fps = 30, mode = 'hybrid', soundVolumes = { TYPING: 0.7, SEND: 0.85, RECEIVE: 0.85, BACKSPACE: 0.7 } } = data;
   const jobId = uuidv4();
   const outputDir = './temp';
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   const outputPath = path.join(outputDir, `${jobId}.mp4`);
-
+  
   const inputStream = new PassThrough();
   const ff = ffmpeg()
     .input(inputStream)
@@ -34,7 +35,6 @@ export async function processVideoJob(socket, data) {
 
   const width = quality === '1080p' ? 1080 : 720;
   const height = quality === '1080p' ? 1920 : 1280;
-
   ff.videoFilters([`scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`]);
 
   if (!isPro) {
@@ -46,17 +46,20 @@ export async function processVideoJob(socket, data) {
     uniqueTypes.forEach(type => {
       ff.input(SOUND_ASSETS[type]);
     });
-
+    
     const typeToIdx = {};
-    uniqueTypes.forEach((type, i) => { typeToIdx[type] = i + 1; });
+    uniqueTypes.forEach((type, i) => {
+      typeToIdx[type] = i + 1;
+    });
 
     const typeCounts = {};
-    audioEvents.forEach(e => { typeCounts[e.type] = (typeCounts[e.type] || 0) + 1; });
+    audioEvents.forEach(e => {
+      typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+    });
 
     let filterString = '';
     let amixInputs = '';
-
-    // 1. SPLIT STREAMS
+    
     uniqueTypes.forEach(type => {
       const count = typeCounts[type];
       const inputIdx = typeToIdx[type];
@@ -71,36 +74,26 @@ export async function processVideoJob(socket, data) {
       }
     });
 
-    // 2. APPLY PRECISION TRIMMING AND DELAYS
     const currentCounters = {};
     audioEvents.forEach((event, idx) => {
       const type = event.type;
       const c = currentCounters[type] || 0;
       currentCounters[type] = c + 1;
-
       const inLabel = `[s_${type}_${c}]`;
       const outLabel = `[a${idx}]`;
-      const delay = event.timestamp; 
-      
+      const delay = event.timestamp;
       const isKeystroke = (type === 'TYPING' || type === 'BACKSPACE');
       
-      // SURGICAL FIX: 
-      // 1. Use duration=0.2 to ensure the click is captured (0.1 was too short for some streams).
-      // 2. Add a tiny fadeout (afade) to prevent audio pops.
-      // 3. Use pipe syntax for adelay (delay|delay) as it's more stable for stereo inputs.
-      const trimFilter = isKeystroke 
-        ? 'atrim=duration=0.2,asetpts=PTS-STARTPTS,afade=t=out:st=0.15:d=0.05,' 
-        : '';
+      const trimFilter = isKeystroke ? 'atrim=duration=0.15,asetpts=PTS-STARTPTS,afade=t=out:st=0.1:d=0.05,' : '';
       
-      const volume = isKeystroke ? 0.5 : 0.7;
+      // APPLY DYNAMIC VOLUME FROM FRONTEND
+      const volume = soundVolumes[type] || (isKeystroke ? 0.7 : 0.85);
       
       filterString += `${inLabel}${trimFilter}adelay=${delay}|${delay},volume=${volume}${outLabel};`;
       amixInputs += outLabel;
     });
 
-    // 3. MIX ALL STREAMS
     filterString += `${amixInputs}amix=inputs=${audioEvents.length}:dropout_transition=0:normalize=0[outa]`;
-
     ff.complexFilter(filterString);
     ff.outputOptions(['-map 0:v', '-map [outa]']);
   }
@@ -125,7 +118,6 @@ export async function processVideoJob(socket, data) {
         }
       }
     });
-
     socket.on('finish-frames', () => inputStream.end());
   }
 }
@@ -140,10 +132,14 @@ async function runServerSideRender(inputStream, data, socket) {
     await page.setViewport({ width: 360, height: 640, deviceScaleFactor: 2 });
     const appUrl = process.env.VITE_APP_URL || 'http://localhost:5173';
     await page.goto(`${appUrl}/#/render-preview`);
-    await page.evaluate((d) => { window.RENDER_DATA = d; }, data);
+    await page.evaluate((d) => {
+      window.RENDER_DATA = d;
+    }, data);
     await page.waitForFunction(() => window.IS_READY === true);
     socket.emit('render-status', { message: "Cloud rendering started..." });
   } catch (e) {
     socket.emit('render-error', { message: `Puppeteer Error: ${e.message}` });
+  } finally {
+    await browser.close();
   }
-      }
+        }
